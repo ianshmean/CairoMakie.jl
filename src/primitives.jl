@@ -305,27 +305,56 @@ end
 #                                     Text                                     #
 ################################################################################
 
+function p3_to_p2(p::Point3{T}) where T
+    if p[3] == 0
+        Point2{T}(p[1:2]...)
+    else
+        error("Can't reduce Point3 to Point2 with nonzero third component $(p[3]).")
+    end  
+end
+
 function draw_atomic(scene::Scene, screen::CairoScreen, primitive::Text)
     ctx = screen.context
-    @get_attribute(primitive, (textsize, color, font, align, rotation, model, justification, lineheight))
+    @get_attribute(primitive, (textsize, color, font, align, rotation, model, justification, lineheight, space))
+
     txt = to_value(primitive[1])
     position = primitive.attributes[:position][]
     N = length(txt)
     atlas = AbstractPlotting.get_texture_atlas()
-    if position isa Union{StaticArrays.StaticArray, Tuple{Real, Real}, GeometryBasics.Point} # one position to place text
-        position = AbstractPlotting.layout_text(
-            txt, position, textsize,
+
+    glyphoffsets = if position isa Union{StaticArrays.StaticArray, Tuple{Real, Real}, GeometryBasics.Point} # one position to place text
+
+        position
+
+        offsets_p3 = AbstractPlotting.layout_text(
+            txt, textsize,
             font, align, rotation, model, justification, lineheight
         )
+        p3_to_p2.(offsets_p3)
+    else
+        # no offsets through layout, every char already has its own position specified
+        [Point2f0(0, 0) for char in txt]
     end
+
     stridx = 1
-    broadcast_foreach(1:N, position, textsize, color, font, rotation) do i, p, ts, cc, f, r
+
+    broadcast_foreach(1:N, position, glyphoffsets, textsize, color, font, rotation) do i, p, goffset, ts, cc, f, r
+
         Cairo.save(ctx)
         char = txt[stridx]
 
         stridx = nextind(txt, stridx)
-        pos = project_position(scene, p, Mat4f0(I))
-        scale = project_scale(scene, ts, Mat4f0(I))
+
+        if space == :data
+            pos = project_position(
+                scene,
+                to_ndim(Point3f0, p, 0) .+ to_ndim(Point3f0, goffset, 0),
+                Mat4f0(I))
+            scale = project_scale(scene, ts, Mat4f0(I))
+        elseif space == :screen
+            pos = project_position(scene, p, Mat4f0(I)) .+ goffset .* (1, -1) # flip for Cairo
+            scale = length(ts) == 2 ? ts : SVector(ts, ts)
+        end
         Cairo.move_to(ctx, pos[1], pos[2])
         Cairo.set_source_rgba(ctx, red(cc), green(cc), blue(cc), alpha(cc))
         cairoface = set_ft_font(ctx, f)
