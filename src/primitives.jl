@@ -319,62 +319,70 @@ function draw_atomic(scene::Scene, screen::CairoScreen, primitive::Text)
 
     txt = to_value(primitive[1])
     position = primitive.attributes[:position][]
-    N = length(txt)
-    atlas = AbstractPlotting.get_texture_atlas()
 
-    glyphoffsets = if position isa Union{StaticArrays.StaticArray, Tuple{Real, Real}, GeometryBasics.Point} # one position to place text
+    # use cached glyph info
+    glyphlayouts = primitive._glyphlayout[]
 
-        position
+    draw_string(scene, ctx, txt, position, glyphlayouts, textsize, color, font, align, rotation, model, justification, lineheight, space)
 
-        offsets_p3 = AbstractPlotting.layout_text(
-            txt, textsize,
-            font, align, rotation, model, justification, lineheight
-        )
-        p3_to_p2.(offsets_p3)
-    else
-        # no offsets through layout, every char already has its own position specified
-        [Point2f0(0, 0) for char in txt]
-    end
-
-    stridx = 1
-
-    broadcast_foreach(1:N, position, glyphoffsets, textsize, color, font, rotation) do i, p, goffset, ts, cc, f, r
-
-        Cairo.save(ctx)
-        char = txt[stridx]
-
-        stridx = nextind(txt, stridx)
-
-        if space == :data
-            pos = project_position(
-                scene,
-                to_ndim(Point3f0, p, 0) .+ to_ndim(Point3f0, goffset, 0),
-                Mat4f0(I))
-            scale = project_scale(scene, ts, Mat4f0(I))
-        elseif space == :screen
-            pos = project_position(scene, p, Mat4f0(I)) .+ goffset .* (1, -1) # flip for Cairo
-            scale = length(ts) == 2 ? ts : SVector(ts, ts)
-        end
-        Cairo.move_to(ctx, pos[1], pos[2])
-        Cairo.set_source_rgba(ctx, red(cc), green(cc), blue(cc), alpha(cc))
-        cairoface = set_ft_font(ctx, f)
-
-        mat = scale_matrix(scale...)
-        set_font_matrix(ctx, mat)
-
-        # TODO this only works in 2d
-        Cairo.rotate(ctx, to_2d_rotation(r))
-
-        if !(char in ('\r', '\n'))
-            Cairo.show_text(ctx, string(char))
-        end
-
-        cairo_font_face_destroy(cairoface)
-
-        Cairo.restore(ctx)
-    end
     nothing
 end
+
+
+function draw_string(scene, ctx, strings::AbstractArray, positions::AbstractArray, glyphlayouts, textsize, color, font, align, rotation, model::SMatrix, justification, lineheight, space)
+
+    # TODO: why is the Ref around model necessary? doesn't broadcast_foreach handle staticarrays matrices?
+    broadcast_foreach(strings, positions, glyphlayouts, textsize, color, font, align, rotation, Ref(model), justification, lineheight, space) do str, pos, glayout, ts, c, f, al, ro, mo, ju, li, sp
+
+        draw_string(scene, ctx, str, pos, glayout, ts, c, f, al, ro, mo, ju, li, sp)
+    end
+end
+
+function draw_string(scene, ctx, str::String, position::VecTypes, glyphlayout, textsize, color, font, align, rotation, model, justification, lineheight, space)
+
+    glyphoffsets, _ = glyphlayout
+
+    # calculate the glyph positions and text size relative to screen space
+    if space == :data
+        # in data space, the glyph offsets are just added to the string positions
+        # and then projected
+        glyphpositions = [project_position(
+            scene,
+            to_ndim(Point3f0, position, 0) .+ goffset,
+            Mat4f0(I)) for goffset in glyphoffsets]
+        # and the scale is projected
+        scale = project_scale(scene, textsize, Mat4f0(I))
+    elseif space == :screen
+        # in screen space, the glyph offsets are added after projecting
+        # the string position into screen space
+        glyphpositions = [project_position(scene, position, Mat4f0(I)) .+ p3_to_p2(goffset) .* (1, -1) for goffset in glyphoffsets] # flip for Cairo
+        # and the scale is just taken as is
+        scale = length(textsize) == 2 ? textsize : SVector(textsize, textsize)
+    end
+
+
+    Cairo.save(ctx)
+
+    cairoface = set_ft_font(ctx, font)
+    Cairo.set_source_rgba(ctx, rgbatuple(color)...)
+    set_font_matrix(ctx, scale_matrix(scale...))
+
+    for (gpos, char) in zip(glyphpositions, str)
+
+        char in ('\r', '\n') && continue
+
+        Cairo.move_to(ctx, gpos...)
+        # TODO this only works in 2d
+        Cairo.rotate(ctx, to_2d_rotation(rotation))
+
+        Cairo.show_text(ctx, string(char))
+    end
+
+    cairo_font_face_destroy(cairoface)
+
+    Cairo.restore(ctx)
+end
+
 
 ################################################################################
 #                                Heatmap, Image                                #
