@@ -371,11 +371,13 @@ function draw_string(scene, ctx, str::String, position::VecTypes, glyphlayout, t
 
         char in ('\r', '\n') && continue
 
+        Cairo.save(ctx)
         Cairo.move_to(ctx, gpos...)
         # TODO this only works in 2d
         Cairo.rotate(ctx, to_2d_rotation(rotation))
 
         Cairo.show_text(ctx, string(char))
+        Cairo.restore(ctx)
     end
 
     cairo_font_face_destroy(cairoface)
